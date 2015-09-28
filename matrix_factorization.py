@@ -40,10 +40,10 @@ def get_latent_feature_dfs(ratings=None, fp='var_features_dfs.pkl', n_latent_fea
     user_vals = np.random.randn(*shape_user) * scale_user
     item_vals = np.random.randn(*shape_item) * scale_item
 
-    user = pd.DataFrame(user_vals, columns=user_index)
-    item = pd.DataFrame(item_vals, columns=item_index)
+    users = pd.DataFrame(user_vals, columns=user_index)
+    items = pd.DataFrame(item_vals, columns=item_index)
 
-    return user, item
+    return users, items
 
 def build_model(var1_name='var1', var2_name='var2'):
 
@@ -66,24 +66,29 @@ def build_model(var1_name='var1', var2_name='var2'):
 
     return f
 
-def train(data, level=0, max_epochs=100):
+def train(data, users_all, items_all, level=0, max_epochs=100):
 
     epoch = 0
 
-    while epoch < max_epochs:
+    try:
+        while epoch < max_epochs:
 
-        epoch += 1
+            epoch += 1
 
-        for (movie_idx, ratings_series) in data.groupby(level=level):
+            for (item_idx, ratings_series) in data.groupby(level=level):
 
-            user_idxs = ratings_series.index.get_level_values(0)
+                user_idxs = ratings_series.index.get_level_values(0)
 
-            users = users_features[user_idxs]
-            movie = movies_features[movie_idx]
-            c, ug, ig = f(ratings_series, users, movie)
+                users = users_all[user_idxs]
+                item = items_all[item_idx]
+                c, ug, ig = f(ratings_series, users, item)
 
-            users_features[user_idxs] = users - lr * ug
-            movies_features[movie_idx] = movie - lr * ig
+                users_all[user_idxs] = users - lr * ug
+                items_all[item_idx] = item - lr * ig
+    except KeyboardInterrupt:
+        print('stopping training early on epoch {}'.format(epoch))
+    finally:
+        save_var_features_dfs((users_all, items_all), fp=var_features_fp)
 
 
 if __name__ == '__main__':
@@ -100,15 +105,10 @@ if __name__ == '__main__':
     print('loading data')
     s = pd.read_csv(movies_ratings_fp, index_col=['userId', 'movieId'])['rating']
 
-    users_features, movies_features = get_latent_feature_dfs(s, fp=var_features_fp, n_latent_features=n_latent_features)
+    users, movies = get_latent_feature_dfs(s, fp=var_features_fp, n_latent_features=n_latent_features)
 
     print('building model')
     f = build_model()
 
     print('training')
-    try:
-        train(s, level=1)
-    except KeyboardInterrupt:
-        print('stopping training early')
-    finally:
-        save_var_features_dfs(fp=var_features_fp)
+    train(s, users, movies, level=1)
