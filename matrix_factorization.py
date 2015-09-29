@@ -22,7 +22,7 @@ def save_var_features_dfs(dfs, fp='var_features_dfs.pkl'):
     with open(fp, 'wb') as f:
         pickle.dump(dfs, f)
 
-def get_latent_feature_dfs(ratings=None, fp='var_features_dfs.pkl', n_latent_features=20):
+def get_latent_feature_dfs(ratings=None, fp='user_item_features_dfs.pkl', n_latent_features=20):
     
     res = load_var_features_dfs(fp)
     if res:
@@ -39,6 +39,12 @@ def get_latent_feature_dfs(ratings=None, fp='var_features_dfs.pkl', n_latent_fea
 
     user_vals = np.random.randn(*shape_user) * scale_user
     item_vals = np.random.randn(*shape_item) * scale_item
+
+    # Add biases and weights to users/items
+    bias_weight = np.array([1, 0])[:, None]
+
+    user_vals = np.concatenate((np.repeat(bias_weight, user_vals.shape[1], axis=1), user_vals))
+    item_vals = np.concatenate((np.repeat(bias_weight[::-1], item_vals.shape[1], axis=1), item_vals))
 
     users = pd.DataFrame(user_vals, columns=user_index)
     items = pd.DataFrame(item_vals, columns=item_index)
