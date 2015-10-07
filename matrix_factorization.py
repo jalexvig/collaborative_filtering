@@ -1,11 +1,14 @@
 import os
 import pickle
+import logging
 
 import theano
 from theano import tensor as T
 import pandas as pd
 import numpy as np
 from sklearn import cross_validation
+
+logger = logging.getLogger(__name__)
 
 
 def load_var_features_dfs(fp):
@@ -200,34 +203,36 @@ def main(f, data, users_all, items_all,
             if valid_frequency and (epoch % valid_frequency == 0):
 
                 error = validate(data, users_all, items_all)
-                print('Validation error epoch {}: {}'.format(epoch, error))
+                logger.info('Validation error epoch {}: {}'.format(epoch, error))
 
             if save_frequency and (epoch % save_frequency == 0):
 
                 save_var_features_dfs((users_all, items_all), fp=save_fp)
 
     except KeyboardInterrupt:
-        print('Stopping training early on epoch {}'.format(epoch))
+        logger.info('Stopping training early on epoch {}'.format(epoch))
     finally:
         save_var_features_dfs((users_all, items_all), fp=save_fp)
 
 
 if __name__ == '__main__':
 
+    logging.basicConfig(level=logging.DEBUG)
+
     movies_ratings_fp = 'ml-latest/ratings.csv'  # fp to movie ratings csv
     var_features_fp = 'user_movie_features_dfs.pkl'  # fp to pickled variable_feature dataframes
 
     n_latent_features = 20
 
-    print('loading data')
+    logger.info('Loading data')
     data = pd.read_csv(movies_ratings_fp, index_col=['userId', 'movieId'])['rating']
 
     users, movies = get_latent_feature_dfs(data, fp=var_features_fp, n_latent_features=n_latent_features)
 
-    print('building model')
+    logger.info('Building model')
     f = build_model()
 
-    print('training')
+    logger.info('Training')
     main(f, data, users, movies,
          level=1, min_ratings_item=10000, valid_frequency=5,
          save_frequency=10, save_fp=var_features_fp)
