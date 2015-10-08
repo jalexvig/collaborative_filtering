@@ -65,8 +65,9 @@ def get_latent_feature_dfs(ratings=None, fp='user_item_features_dfs.pkl', n_late
     # Add biases and weights to users/items - user weights will be multiplied by item bias terms of 1 (and vice versa)
     bias_weight = np.array([1, 0])[:, None]
 
+    # Note: One of these will be switched so biases and weights are multiplied correctly
     user_vals = np.concatenate((np.repeat(bias_weight, user_vals.shape[1], axis=1), user_vals))
-    item_vals = np.concatenate((np.repeat(bias_weight[::-1], item_vals.shape[1], axis=1), item_vals))
+    item_vals = np.concatenate((np.repeat(bias_weight, item_vals.shape[1], axis=1), item_vals))
 
     # Return DataFrames holding the features
     users = pd.DataFrame(user_vals, columns=user_index, dtype=np.float32)
@@ -94,7 +95,7 @@ def build_model(reg_constant=0.1, var1_name='var1', var2_name='var2'):
 
     cost = prediction_error + reg_constant * l2_penalty
 
-    var1_grad = T.grad(cost, var1_vector)
+    var1_grad = T.grad(cost, var1_vector) / var2_matrix.shape[1]
     var2_grad = T.grad(cost, var2_matrix)
 
     f = theano.function(inputs=[ratings, var1_vector, var2_matrix], outputs=[cost, var1_grad, var2_grad])
@@ -102,30 +103,28 @@ def build_model(reg_constant=0.1, var1_name='var1', var2_name='var2'):
     return f
 
 
-def train(f, data, users_all, items_all, learning_rate, level):
+def train(f, data, var1_all, var2_all, learning_rate, level):
     """
     Train the MF model
     :param f: theano model
     :param data: Series of ratings that has a multiindex w/ levels (user, item)
-    :param users_all: DataFrame of all users in latent feature space
-    :param items_all: DataFrame of all items in latent feature space
+    :param var1_all: DataFrame of either users or items in latent feature space
+    :param var2_all: DataFrame of either users or items in latent feature space
     :param learning_rate: learning rate used for SGD
     :param level: level of data's multiindex to groupby on for training
     """
 
     for (var1_idx, ratings_series) in data.groupby(level=level):
 
-        if level == 0:
-            var1_all, var2_all = users_all, items_all
-            var2_idxs = ratings_series.index.get_level_values(1)
-        elif level == 1:
-            var1_all, var2_all = items_all, users_all
-            var2_idxs = ratings_series.index.get_level_values(0)
+        var2_idxs = ratings_series.index.get_level_values(1 - level)
 
         var1 = var1_all[var1_idx]
         var2 = var2_all[var2_idxs]
 
         c, g1, g2 = f(ratings_series, var1, var2)
+
+        g1[0] = 0
+        g2[1, :] = 0
 
         # TODO: implement momentum
         var1_all[var1_idx] -= learning_rate * g1
@@ -162,7 +161,7 @@ def validate(data, users_all, items_all):
 
 
 def main(f, data, users_all, items_all,
-         learning_rate=0.000005, level=0, max_epochs=100,
+         learning_rate=5e-4, level=0, max_epochs=100,
          min_ratings_user=0, min_ratings_item=0,
          valid_frequency=0, perc_valid=0.1,
          save_frequency=0, save_fp=None):
@@ -193,12 +192,19 @@ def main(f, data, users_all, items_all,
 
     data_train, data_valid = cross_validation.train_test_split(data, test_size=perc_valid)
 
+    if level == 0:
+        var1_all, var2_all = users_all, items_all
+    elif level == 1:
+        var1_all, var2_all = items_all, users_all
+
+    var2_all.iloc[:2, :] = var2_all.iloc[1::-1, :].values
+
     try:
         while epoch < max_epochs:
 
             epoch += 1
 
-            train(f, data_train, users_all, items_all, learning_rate, level)
+            train(f, data_train, var1_all, var2_all, learning_rate, level)
 
             if valid_frequency and (epoch % valid_frequency == 0):
 
@@ -217,7 +223,8 @@ def main(f, data, users_all, items_all,
 
 if __name__ == '__main__':
 
-    logging.basicConfig(level=logging.DEBUG)
+    FORMAT = '%(levelname)s: %(name)s: %(message)s'
+    logging.basicConfig(level=logging.DEBUG, format=FORMAT)
 
     movies_ratings_fp = 'ml-latest/ratings.csv'  # fp to movie ratings csv
     var_features_fp = 'user_movie_features_dfs.pkl'  # fp to pickled variable_feature dataframes
@@ -226,6 +233,7 @@ if __name__ == '__main__':
 
     logger.info('Loading data')
     data = pd.read_csv(movies_ratings_fp, index_col=['userId', 'movieId'])['rating']
+    data = data.loc[:, :20]
 
     users, movies = get_latent_feature_dfs(data, fp=var_features_fp, n_latent_features=n_latent_features)
 
