@@ -36,12 +36,13 @@ def save_var_features_dfs(dfs, fp):
     with open(fp, 'wb') as f:
         pickle.dump(dfs, f)
 
-def get_latent_feature_dfs(ratings=None, fp='user_item_features_dfs.pkl', n_latent_features=20):
+def get_latent_feature_dfs(ratings=None, fp='user_item_features_dfs.pkl', n_latent_features=20, level=None):
     """
     Get DataFrames that describe the variables in the shared latent feature space
     :param ratings: Series of ratings that has a multiindex w/ levels (user, item)
     :param fp: filepath to load DataFrames from
     :param n_latent_features: dimensionality of latent feature space
+    :param level: which variable will be used for grouping (0=user, 1=item)
     :return: tuple of two DataFrames respectively describing users and items in the latent feature space
     """
     
@@ -53,8 +54,8 @@ def get_latent_feature_dfs(ratings=None, fp='user_item_features_dfs.pkl', n_late
     user_index = sorted(ratings.index.levels[0])
     item_index = sorted(ratings.index.levels[1])
 
-    shape_user = (n_latent_features, len(user_index))
-    shape_item = (n_latent_features, len(item_index))
+    shape_user = (len(user_index), n_latent_features)
+    shape_item = (len(item_index), n_latent_features)
 
     scale_user = np.sqrt(2. / (sum(shape_user)))
     scale_item = np.sqrt(2. / (sum(shape_item)))
@@ -63,15 +64,16 @@ def get_latent_feature_dfs(ratings=None, fp='user_item_features_dfs.pkl', n_late
     item_vals = np.random.randn(*shape_item) * scale_item
 
     # Add biases and weights to users/items - user weights will be multiplied by item bias terms of 1 (and vice versa)
-    bias_weight = np.array([1, 0])[:, None]
+    user_prefix = [1, 0] if level == 0 else [0, 1]
+    item_prefix = user_prefix[::-1]
 
     # Note: One of these will be switched so biases and weights are multiplied correctly
-    user_vals = np.concatenate((np.repeat(bias_weight, user_vals.shape[1], axis=1), user_vals))
-    item_vals = np.concatenate((np.repeat(bias_weight, item_vals.shape[1], axis=1), item_vals))
+    user_vals = np.concatenate((np.tile(user_prefix, (user_vals.shape[0], 1)), user_vals), axis=1)
+    item_vals = np.concatenate((np.tile(item_prefix, (item_vals.shape[0], 1)), item_vals), axis=1)
 
     # Return DataFrames holding the features
-    users = pd.DataFrame(user_vals, columns=user_index, dtype=np.float32)
-    items = pd.DataFrame(item_vals, columns=item_index, dtype=np.float32)
+    users = pd.DataFrame(user_vals, index=user_index, dtype=np.float32)
+    items = pd.DataFrame(item_vals, index=item_index, dtype=np.float32)
 
     return users, items
 
@@ -88,14 +90,14 @@ def build_model(reg_constant=0.1, var1_name='var1', var2_name='var2'):
     var1_vector = T.vector('{}_vector'.format(var1_name))
     var2_matrix = T.matrix('{}_matrix'.format(var2_name))
 
-    predictions = T.dot(var1_vector, var2_matrix)
+    predictions = T.dot(var2_matrix, var1_vector)
 
     prediction_error = ((ratings - predictions) ** 2).sum()
     l2_penalty = (var1_vector ** 2).sum() + (var2_matrix ** 2).sum().sum()
 
     cost = prediction_error + reg_constant * l2_penalty
 
-    var1_grad = T.grad(cost, var1_vector) / var2_matrix.shape[1]
+    var1_grad = T.grad(cost, var1_vector) / var2_matrix.shape[0]
     var2_grad = T.grad(cost, var2_matrix)
 
     f = theano.function(inputs=[ratings, var1_vector, var2_matrix], outputs=[cost, var1_grad, var2_grad])
@@ -118,17 +120,17 @@ def train(f, data, var1_all, var2_all, learning_rate, level):
 
         var2_idxs = ratings_series.index.get_level_values(1 - level)
 
-        var1 = var1_all[var1_idx]
-        var2 = var2_all[var2_idxs]
+        var1 = var1_all.loc[var1_idx]
+        var2 = var2_all.loc[var2_idxs]
 
         c, g1, g2 = f(ratings_series, var1, var2)
 
         g1[0] = 0
-        g2[1, :] = 0
+        g2[:, 1] = 0
 
         # TODO: implement momentum
-        var1_all[var1_idx] -= learning_rate * g1
-        var2_all[var2_idxs] -= learning_rate * g2
+        var1_all.loc[var1_idx] -= learning_rate * g1
+        var2_all.loc[var2_idxs] -= learning_rate * g2
 
 
 def validate(data, users_all, items_all):
@@ -146,10 +148,10 @@ def validate(data, users_all, items_all):
 
         item_idxs = user_ratings.index.get_level_values(1).values
 
-        user = users_all[user_idx]
-        items = items_all[item_idxs]
+        user = users_all.loc[user_idx]
+        items = items_all.loc[item_idxs]
 
-        user_predictions = np.dot(user, items)
+        user_predictions = np.dot(items, user)
 
         user_errors = (user_ratings - user_predictions).abs()
 
@@ -161,7 +163,7 @@ def validate(data, users_all, items_all):
 
 
 def main(f, data, users_all, items_all,
-         learning_rate=5e-4, level=0, max_epochs=100,
+         learning_rate=5e-4, level=0, max_epochs=1000,
          min_ratings_user=0, min_ratings_item=0,
          valid_frequency=0, perc_valid=0.1,
          save_frequency=0, save_fp=None):
@@ -182,11 +184,11 @@ def main(f, data, users_all, items_all,
     :param save_fp: filepath to save user and item feature matrices to
     """
 
-    if min_ratings_user:
-        data = data.groupby(level=0).filter(lambda s: len(s) >= min_ratings_user)
-
     if min_ratings_item:
         data = data.groupby(level=1).filter(lambda s: len(s) >= min_ratings_item)
+
+    if min_ratings_user:
+        data = data.groupby(level=0).filter(lambda s: len(s) >= min_ratings_user)
 
     epoch = 0
 
@@ -196,8 +198,6 @@ def main(f, data, users_all, items_all,
         var1_all, var2_all = users_all, items_all
     elif level == 1:
         var1_all, var2_all = items_all, users_all
-
-    var2_all.iloc[:2, :] = var2_all.iloc[1::-1, :].values
 
     try:
         while epoch < max_epochs:
@@ -233,7 +233,6 @@ if __name__ == '__main__':
 
     logger.info('Loading data')
     data = pd.read_csv(movies_ratings_fp, index_col=['userId', 'movieId'])['rating']
-    data = data.loc[:, :20]
 
     users, movies = get_latent_feature_dfs(data, fp=var_features_fp, n_latent_features=n_latent_features)
 
@@ -242,5 +241,5 @@ if __name__ == '__main__':
 
     logger.info('Training')
     main(f, data, users, movies,
-         level=1, min_ratings_item=10000, valid_frequency=5,
+         level=1, min_ratings_item=100, valid_frequency=5,
          save_frequency=10, save_fp=var_features_fp)
