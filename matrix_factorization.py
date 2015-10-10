@@ -14,11 +14,11 @@ logger = logging.getLogger(__name__)
 def load_var_features_dfs(fp):
     """
     Load DataFrames that describe the variables in the shared latent feature space
-    :param fp: filepath to load from
-    :return: two DataFrames or None if DataFrames could not be found/loaded
+    :param fp: Filepath to load from
+    :return: Tuple of two DataFrames or None if DataFrames could not be found/loaded
     """
 
-    if os.path.isfile(fp):
+    if fp and os.path.isfile(fp):
         with open(fp, 'rb') as f:
             res = pickle.load(f)
     else:
@@ -29,21 +29,21 @@ def load_var_features_dfs(fp):
 def save_var_features_dfs(dfs, fp):
     """
     Save DataFrames that describe the variables in the shared latent feature space
-    :param dfs: length-2 iterable of DataFrames
-    :param fp: filepath to save to
+    :param dfs: Length-2 iterable of DataFrames
+    :param fp: Filepath to save to
     """
 
     with open(fp, 'wb') as f:
         pickle.dump(dfs, f)
 
-def get_latent_feature_dfs(ratings=None, fp='user_item_features_dfs.pkl', n_latent_features=20, level=None):
+def get_latent_feature_dfs(ratings=None, fp=None, n_latent_features=20, level=None):
     """
     Get DataFrames that describe the variables in the shared latent feature space
     :param ratings: Series of ratings that has a multiindex w/ levels (user, item)
-    :param fp: filepath to load DataFrames from
-    :param n_latent_features: dimensionality of latent feature space
-    :param level: which variable will be used for grouping (0=user, 1=item)
-    :return: tuple of two DataFrames respectively describing users and items in the latent feature space
+    :param fp: Filepath to load DataFrames from
+    :param n_latent_features: Dimensionality of latent feature space
+    :param level: Which variable will be used for grouping (0=user, 1=item)
+    :return: Tuple of two DataFrames respectively describing users and items in the latent feature space
     """
     
     res = load_var_features_dfs(fp)
@@ -51,8 +51,12 @@ def get_latent_feature_dfs(ratings=None, fp='user_item_features_dfs.pkl', n_late
         return res
 
     # Do Glorot initialization for features
-    user_index = sorted(ratings.index.levels[0])
-    item_index = sorted(ratings.index.levels[1])
+    try:
+        user_index = sorted(ratings.index.levels[0])
+        item_index = sorted(ratings.index.levels[1])
+    except AttributeError:
+        user_index = [0]
+        item_index = ratings.index
 
     shape_user = (len(user_index), n_latent_features)
     shape_item = (len(item_index), n_latent_features)
@@ -80,9 +84,9 @@ def get_latent_feature_dfs(ratings=None, fp='user_item_features_dfs.pkl', n_late
 def build_model(reg_constant=0.1, var1_name='var1', var2_name='var2'):
     """
     Build MF model in theano
-    :param reg_constant: regularization constant
-    :param var1_name: name of first variable (e.g. users)
-    :param var2_name: name of second variable (e.g. items)
+    :param reg_constant: Regularization constant
+    :param var1_name: Name of first variable (e.g. users)
+    :param var2_name: Name of second variable (e.g. items)
     :return: theano function implementing MF model
     """
 
@@ -112,8 +116,8 @@ def train(f, data, var1_all, var2_all, learning_rate, level):
     :param data: Series of ratings that has a multiindex w/ levels (user, item)
     :param var1_all: DataFrame of either users or items in latent feature space
     :param var2_all: DataFrame of either users or items in latent feature space
-    :param learning_rate: learning rate used for SGD
-    :param level: level of data's multiindex to groupby on for training
+    :param learning_rate: Learning rate used for SGD
+    :param level: Level of data's multiindex to groupby on for training
     """
 
     for (var1_idx, ratings_series) in data.groupby(level=level):
@@ -139,7 +143,7 @@ def validate(data, users_all, items_all):
     :param data: Series of ratings that has a multiindex w/ levels (user, item)
     :param users_all: DataFrame of all users in latent feature space
     :param items_all: DataFrame of all items in latent feature space
-    :return: error averaged over validation data
+    :return: Error averaged over validation data
     """
 
     errors = []
@@ -162,6 +166,88 @@ def validate(data, users_all, items_all):
     return error
 
 
+def get_user_vector(ratings, items_all, n_latent_features, level, learning_rate):
+    """
+    Get user representation in latent feature space
+    :param ratings: Series of item ratings made by user
+    :param items_all: Series of all items
+    :param n_latent_features: Number of latent features
+    :param level: Level of multiindex on which training data was grouped (0=user, 1=item) this is to set up bias terms
+    :param learning_rate: Learning rate used for SGD
+    :return:
+    """
+
+    user, _ = get_latent_feature_dfs(ratings=ratings, n_latent_features=n_latent_features, level=level)
+    user = user.iloc[0]
+
+    ratings = ratings[~ratings.isnull() & ratings > 0]
+    items = items_all.loc[ratings.index]
+
+    f = build_model()
+
+    while True:
+
+        try:
+            c, ug, ig = f(ratings, user, items)
+
+            user -= learning_rate * ug
+
+            logger.debug(c)
+
+        except KeyboardInterrupt:
+            return user
+
+
+def get_user_ratings(s, save_fp=None, load_only=False):
+    """
+    Get user ratings
+    :param s: Series of item identifiers
+    :param save_fp: Filepath to save/load to
+    :param load_only: Boolean indicating whether or not to only load (as opposed to asking for more ratings)
+    :return: Series of item ratings
+    """
+
+    if save_fp and os.path.isfile(save_fp):
+        with open(save_fp, 'rb') as f:
+            user_ratings = pickle.load(f)
+    else:
+        user_ratings = pd.Series(index=s.index)
+
+    if load_only:
+        return user_ratings
+
+    unrated = s[user_ratings.isnull()]
+
+    possible_ratings = {0.5 * i for i in range(11)}
+
+    print('\nEnter 0 or \\n for unknown rating')
+    print('Press ctrl-c to stop\n')
+
+    try:
+        for idx, title in unrated.items():
+
+            rating = None
+
+            while rating not in possible_ratings:
+                rating = input('{} : '.format(title))
+                if rating == '':
+                    rating = '0'
+                try:
+                    rating = float(rating)
+                except ValueError:
+                    print('Didn\'t recognize rating {}. Try again.'.format(rating))
+
+            user_ratings[idx] = rating
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if save_fp:
+            with open(save_fp, 'wb') as f:
+                pickle.dump(user_ratings, f)
+
+    return user_ratings
+
+
 def main(f, data, users_all, items_all,
          learning_rate=5e-4, level=0, max_epochs=1000,
          min_ratings_user=0, min_ratings_item=0,
@@ -173,15 +259,15 @@ def main(f, data, users_all, items_all,
     :param data: Series of ratings that has a multiindex w/ levels (user, item)
     :param users_all: DataFrame of all users in latent feature space
     :param items_all: DataFrame of all items in latent feature space
-    :param learning_rate: learning rate used for SGD
-    :param level: level of data's multiindex to groupby on for training
-    :param max_epochs: number of epochs before
-    :param min_ratings_user: minimum number of ratings a user must have made
-    :param min_ratings_item: minimum number of ratings an item must have
-    :param valid_frequency: validation frequency (number epochs)
-    :param perc_valid: percentage of eligible datapoints to validate on
-    :param save_frequency: save frequency (number epochs) - if this is >0, must specify save_fp
-    :param save_fp: filepath to save user and item feature matrices to
+    :param learning_rate: Learning rate used for SGD
+    :param level: Level of data's multiindex to groupby on for training
+    :param max_epochs: Number of epochs before
+    :param min_ratings_user: Minimum number of ratings a user must have made
+    :param min_ratings_item: Minimum number of ratings an item must have
+    :param valid_frequency: Validation frequency (number epochs)
+    :param perc_valid: Percentage of eligible datapoints to validate on
+    :param save_frequency: Save frequency (number epochs) - if this is >0, must specify save_fp
+    :param save_fp: Filepath to save user and item feature matrices to
     """
 
     if min_ratings_item:
@@ -228,18 +314,32 @@ if __name__ == '__main__':
 
     movies_ratings_fp = 'ml-latest/ratings.csv'  # fp to movie ratings csv
     var_features_fp = 'user_movie_features_dfs.pkl'  # fp to pickled variable_feature dataframes
+    user_ratings_fp = 'user_ratings.pkl'
 
     n_latent_features = 20
+    level = 1
 
     logger.info('Loading data')
     data = pd.read_csv(movies_ratings_fp, index_col=['userId', 'movieId'])['rating']
 
     users, movies = get_latent_feature_dfs(data, fp=var_features_fp, n_latent_features=n_latent_features)
 
-    logger.info('Building model')
-    f = build_model()
+    # logger.info('Building model')
+    # f = build_model()
+    #
+    # logger.info('Training')
+    # main(f, data, users, movies,
+    #      level=level, min_ratings_item=100, valid_frequency=5,
+    #      save_frequency=10, save_fp=var_features_fp)
 
-    logger.info('Training')
-    main(f, data, users, movies,
-         level=1, min_ratings_item=100, valid_frequency=5,
-         save_frequency=10, save_fp=var_features_fp)
+    logger.info('Creating recommendations')
+
+    item_titles_fp = 'ml-latest/movies.csv'
+    movie_titles = pd.read_csv(item_titles_fp, index_col=['movieId'])['title']
+
+    user_ratings = get_user_ratings(movie_titles, save_fp=user_ratings_fp)
+    user = get_user_vector(user_ratings, movies, n_latent_features, level, learning_rate=5e-4)
+
+    movie_scores = movies.dot(user)
+
+    print(movie_titles[movie_scores.nlargest(20).index])
