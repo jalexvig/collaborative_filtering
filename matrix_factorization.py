@@ -36,13 +36,12 @@ def save_var_features_dfs(dfs, fp):
     with open(fp, 'wb') as f:
         pickle.dump(dfs, f)
 
-def get_latent_feature_dfs(ratings=None, fp=None, n_latent_features=20, level=None):
+def get_latent_feature_dfs(ratings=None, fp=None, n_latent_features=20):
     """
     Get DataFrames that describe the variables in the shared latent feature space
     :param ratings: Series of ratings that has a multiindex w/ levels (user, item)
     :param fp: Filepath to load DataFrames from
     :param n_latent_features: Dimensionality of latent feature space
-    :param level: Which variable will be used for grouping (0=user, 1=item)
     :return: Tuple of two DataFrames respectively describing users and items in the latent feature space
     """
     
@@ -67,13 +66,9 @@ def get_latent_feature_dfs(ratings=None, fp=None, n_latent_features=20, level=No
     user_vals = np.random.randn(*shape_user) * scale_user
     item_vals = np.random.randn(*shape_item) * scale_item
 
-    # Add biases and weights to users/items - user weights will be multiplied by item bias terms of 1 (and vice versa)
-    user_prefix = [1, 0] if level == 0 else [0, 1]
-    item_prefix = user_prefix[::-1]
-
-    # Note: One of these will be switched so biases and weights are multiplied correctly
-    user_vals = np.concatenate((np.tile(user_prefix, (user_vals.shape[0], 1)), user_vals), axis=1)
-    item_vals = np.concatenate((np.tile(item_prefix, (item_vals.shape[0], 1)), item_vals), axis=1)
+    # Add an extra column for the biases
+    user_vals = np.concatenate((np.zeros(user_vals.shape[0], 1), user_vals), axis=1)
+    item_vals = np.concatenate((np.zeros(item_vals.shape[0], 1), item_vals), axis=1)
 
     # Return DataFrames holding the features
     users = pd.DataFrame(user_vals, index=user_index, dtype=np.float32)
@@ -94,7 +89,7 @@ def build_model(reg_constant=0.1, var1_name='var1', var2_name='var2'):
     var1_vector = T.vector('{}_vector'.format(var1_name))
     var2_matrix = T.matrix('{}_matrix'.format(var2_name))
 
-    predictions = T.dot(var2_matrix, var1_vector)
+    predictions = T.dot(var2_matrix[:, 1:], var1_vector[1:]) + var2_matrix[:, 0] + var1_vector[0]
 
     prediction_error = ((ratings - predictions) ** 2).sum()
     l2_penalty = (var1_vector ** 2).sum() + (var2_matrix ** 2).sum().sum()
@@ -128,9 +123,7 @@ def train(f, data, var1_all, var2_all, learning_rate, level):
         var2 = var2_all.loc[var2_idxs]
 
         c, g1, g2 = f(ratings_series, var1, var2)
-
-        g1[0] = 0
-        g2[:, 1] = 0
+        print(c)
 
         # TODO: implement momentum
         var1_all.loc[var1_idx] -= learning_rate * g1
@@ -155,7 +148,7 @@ def validate(data, users_all, items_all):
         user = users_all.loc[user_idx]
         items = items_all.loc[item_idxs]
 
-        user_predictions = np.dot(items, user)
+        user_predictions = np.dot(items[:, 1:], user[1:]) + items[:, 0] + user[0]
 
         user_errors = (user_ratings - user_predictions).abs()
 
@@ -166,18 +159,17 @@ def validate(data, users_all, items_all):
     return error
 
 
-def get_user_vector(ratings, items_all, n_latent_features, level, learning_rate):
+def get_user_vector(ratings, items_all, n_latent_features, learning_rate):
     """
     Get user representation in latent feature space
     :param ratings: Series of item ratings made by user
     :param items_all: Series of all items
     :param n_latent_features: Number of latent features
-    :param level: Level of multiindex on which training data was grouped (0=user, 1=item) this is to set up bias terms
     :param learning_rate: Learning rate used for SGD
     :return:
     """
 
-    user, _ = get_latent_feature_dfs(ratings=ratings, n_latent_features=n_latent_features, level=level)
+    user, _ = get_latent_feature_dfs(ratings=ratings, n_latent_features=n_latent_features)
     user = user.iloc[0]
 
     ratings = ratings[~ratings.isnull() & ratings > 0]
@@ -324,22 +316,22 @@ if __name__ == '__main__':
 
     users, movies = get_latent_feature_dfs(data, fp=var_features_fp, n_latent_features=n_latent_features)
 
-    # logger.info('Building model')
-    # f = build_model()
+    logger.info('Building model')
+    f = build_model()
+
+    logger.info('Training')
+    main(f, data, users, movies,
+         level=level, min_ratings_item=100, valid_frequency=5,
+         save_frequency=10, save_fp=var_features_fp)
+
+    # logger.info('Creating recommendations')
     #
-    # logger.info('Training')
-    # main(f, data, users, movies,
-    #      level=level, min_ratings_item=100, valid_frequency=5,
-    #      save_frequency=10, save_fp=var_features_fp)
-
-    logger.info('Creating recommendations')
-
-    item_titles_fp = 'ml-latest/movies.csv'
-    movie_titles = pd.read_csv(item_titles_fp, index_col=['movieId'])['title']
-
-    user_ratings = get_user_ratings(movie_titles, save_fp=user_ratings_fp)
-    user = get_user_vector(user_ratings, movies, n_latent_features, level, learning_rate=5e-4)
-
-    movie_scores = movies.dot(user)
-
-    print(movie_titles[movie_scores.nlargest(20).index])
+    # item_titles_fp = 'ml-latest/movies.csv'
+    # movie_titles = pd.read_csv(item_titles_fp, index_col=['movieId'])['title']
+    #
+    # user_ratings = get_user_ratings(movie_titles, save_fp=user_ratings_fp)
+    # user = get_user_vector(user_ratings, movies, n_latent_features, learning_rate=5e-4)
+    #
+    # movie_scores = movies.dot(user)
+    #
+    # print(movie_titles[movie_scores.nlargest(20).index])
