@@ -67,8 +67,8 @@ def get_latent_feature_dfs(ratings=None, fp=None, n_latent_features=20):
     item_vals = np.random.randn(*shape_item) * scale_item
 
     # Add an extra column for the biases
-    user_vals = np.concatenate((np.zeros(user_vals.shape[0], 1), user_vals), axis=1)
-    item_vals = np.concatenate((np.zeros(item_vals.shape[0], 1), item_vals), axis=1)
+    user_vals = np.concatenate((np.zeros((user_vals.shape[0], 1)), user_vals), axis=1)
+    item_vals = np.concatenate((np.zeros((item_vals.shape[0], 1)), item_vals), axis=1)
 
     # Return DataFrames holding the features
     users = pd.DataFrame(user_vals, index=user_index, dtype=np.float32)
@@ -123,7 +123,6 @@ def train(f, data, var1_all, var2_all, learning_rate, level):
         var2 = var2_all.loc[var2_idxs]
 
         c, g1, g2 = f(ratings_series, var1, var2)
-        print(c)
 
         # TODO: implement momentum
         var1_all.loc[var1_idx] -= learning_rate * g1
@@ -148,9 +147,9 @@ def validate(data, users_all, items_all):
         user = users_all.loc[user_idx]
         items = items_all.loc[item_idxs]
 
-        user_predictions = np.dot(items[:, 1:], user[1:]) + items[:, 0] + user[0]
+        user_predictions = items.iloc[:, 1:].dot(user[1:]) + items.iloc[:, 0] + user[0]
 
-        user_errors = (user_ratings - user_predictions).abs()
+        user_errors = user_ratings.subtract(user_predictions, level=1).abs()
 
         errors.extend(user_errors)
 
@@ -184,13 +183,11 @@ def get_user_vector(ratings, items_all, n_latent_features, learning_rate):
 
             user -= learning_rate * ug
 
-            logger.debug(c)
-
         except KeyboardInterrupt:
             return user
 
 
-def get_user_ratings(s, save_fp=None, load_only=False):
+def get_user_ratings(s=None, save_fp=None, load_only=False):
     """
     Get user ratings
     :param s: Series of item identifiers
@@ -286,8 +283,8 @@ def main(f, data, users_all, items_all,
 
             if valid_frequency and (epoch % valid_frequency == 0):
 
-                error = validate(data, users_all, items_all)
-                logger.info('Validation error epoch {}: {}'.format(epoch, error))
+                error_valid = validate(data_valid, users_all, items_all)
+                logger.info('Validation absolute value error at epoch {}: {}'.format(epoch, error_valid))
 
             if save_frequency and (epoch % save_frequency == 0):
 
@@ -321,17 +318,19 @@ if __name__ == '__main__':
 
     logger.info('Training')
     main(f, data, users, movies,
-         level=level, min_ratings_item=100, valid_frequency=5,
+         level=level, min_ratings_item=100, valid_frequency=1,
          save_frequency=10, save_fp=var_features_fp)
 
     # logger.info('Creating recommendations')
     #
+    # num_to_show = 20
     # item_titles_fp = 'ml-latest/movies.csv'
     # movie_titles = pd.read_csv(item_titles_fp, index_col=['movieId'])['title']
     #
     # user_ratings = get_user_ratings(movie_titles, save_fp=user_ratings_fp)
     # user = get_user_vector(user_ratings, movies, n_latent_features, learning_rate=5e-4)
     #
-    # movie_scores = movies.dot(user)
+    # scores = movies.iloc[:, 1:].dot(user[1:]) + movies.iloc[:, 0] + user[0]
+    # scores.index = movie_titles[scores.index]
     #
-    # print(movie_titles[movie_scores.nlargest(20).index])
+    # print(scores.nlargest(num_to_show))
