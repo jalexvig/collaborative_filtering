@@ -96,8 +96,8 @@ def build_model(reg_constant=0.1, var1_name='var1', var2_name='var2'):
 
     cost = prediction_error + reg_constant * l2_penalty
 
-    var1_grad = T.grad(cost, var1_vector) / var2_matrix.shape[0]
-    var2_grad = T.grad(cost, var2_matrix)
+    var1_grad, var2_grad = T.grad(cost, [var1_vector, var2_matrix])
+    var1_grad /= var2_matrix.shape[0]
 
     f = theano.function(inputs=[ratings, var1_vector, var2_matrix], outputs=[cost, var1_grad, var2_grad])
 
@@ -129,6 +129,7 @@ def train(f, data, var1_all, var2_all, learning_rate, level):
         var2_all.loc[var2_idxs] -= learning_rate * g2
 
 
+@profile
 def validate(data, users_all, items_all):
     """
     Validate model
@@ -137,6 +138,8 @@ def validate(data, users_all, items_all):
     :param items_all: DataFrame of all items in latent feature space
     :return: Error averaged over validation data
     """
+
+    # This can take very long time if |users| >> |items| in data
 
     errors = []
 
@@ -147,9 +150,10 @@ def validate(data, users_all, items_all):
         user = users_all.loc[user_idx]
         items = items_all.loc[item_idxs]
 
-        user_predictions = items.iloc[:, 1:].dot(user[1:]) + items.iloc[:, 0] + user[0]
+        # much faster than using pandas operations because data already aligned
+        user_predictions = np.dot(items.iloc[:, 1:].values, user[1:].values) + items.iloc[:, 0].values + user[0]
 
-        user_errors = user_ratings.subtract(user_predictions, level=1).abs()
+        user_errors = (user_ratings - user_predictions).abs()
 
         errors.extend(user_errors)
 
@@ -240,7 +244,7 @@ def get_user_ratings(s=None, save_fp=None, load_only=False):
 def main(f, data, users_all, items_all,
          learning_rate=5e-4, level=0, max_epochs=1000,
          min_ratings_user=0, min_ratings_item=0,
-         valid_frequency=0, perc_valid=0.1,
+         valid_frequency=0, perc_valid=0,
          save_frequency=0, save_fp=None):
     """
     Main loop for matrix factorization
@@ -278,11 +282,13 @@ def main(f, data, users_all, items_all,
         while epoch < max_epochs:
 
             epoch += 1
+            logging.debug('Training on epoch %i', epoch)
 
             train(f, data_train, var1_all, var2_all, learning_rate, level)
 
             if valid_frequency and (epoch % valid_frequency == 0):
 
+                logging.debug('Validating on epoch %i', epoch)
                 error_valid = validate(data_valid, users_all, items_all)
                 logger.info('Validation absolute value error at epoch {}: {}'.format(epoch, error_valid))
 
@@ -317,9 +323,9 @@ if __name__ == '__main__':
     f = build_model()
 
     logger.info('Training')
-    main(f, data, users, movies,
-         level=level, min_ratings_item=100, valid_frequency=1,
-         save_frequency=10, save_fp=var_features_fp)
+    main(f, data[:10000000], users, movies,
+         level=level, min_ratings_item=100, valid_frequency=100, perc_valid=0.1,
+         save_frequency=1000, save_fp=var_features_fp)
 
     # logger.info('Creating recommendations')
     #
