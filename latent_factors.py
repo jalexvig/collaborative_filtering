@@ -129,7 +129,6 @@ def train(f, data, var1_all, var2_all, learning_rate, level):
         var2_all.loc[var2_idxs] -= learning_rate * g2
 
 
-@profile
 def validate(data, users_all, items_all):
     """
     Validate model
@@ -305,7 +304,8 @@ def main(f, data, users_all, items_all,
 if __name__ == '__main__':
 
     FORMAT = '%(levelname)s: %(name)s: %(message)s'
-    logging.basicConfig(level=logging.DEBUG, format=FORMAT)
+    log_fp = 'log.txt'
+    logging.basicConfig(level=logging.DEBUG, format=FORMAT, filename=log_fp)
 
     movies_ratings_fp = 'ml-latest/ratings.csv'  # fp to movie ratings csv
     var_features_fp = 'user_movie_features_dfs.pkl'  # fp to pickled variable_feature dataframes
@@ -323,20 +323,20 @@ if __name__ == '__main__':
     f = build_model()
 
     logger.info('Training')
-    main(f, data[:10000000], users, movies,
+    main(f, data, users, movies,
          level=level, min_ratings_item=100, valid_frequency=100, perc_valid=0.1,
          save_frequency=1000, save_fp=var_features_fp)
 
-    # logger.info('Creating recommendations')
-    #
-    # num_to_show = 20
-    # item_titles_fp = 'ml-latest/movies.csv'
-    # movie_titles = pd.read_csv(item_titles_fp, index_col=['movieId'])['title']
-    #
-    # user_ratings = get_user_ratings(movie_titles, save_fp=user_ratings_fp)
-    # user = get_user_vector(user_ratings, movies, n_latent_features, learning_rate=5e-4)
-    #
-    # scores = movies.iloc[:, 1:].dot(user[1:]) + movies.iloc[:, 0] + user[0]
-    # scores.index = movie_titles[scores.index]
-    #
-    # print(scores.nlargest(num_to_show))
+    logger.info('Creating recommendations')
+
+    num_to_show = 20
+    item_titles_fp = 'ml-latest/movies.csv'
+    movie_titles = pd.read_csv(item_titles_fp, index_col=['movieId'])['title']
+
+    user_ratings = get_user_ratings(movie_titles, save_fp=user_ratings_fp)
+    user = get_user_vector(user_ratings, movies, n_latent_features, learning_rate=1e-4)
+
+    scores = movies.iloc[:, 1:].dot(user[1:]) + movies.iloc[:, 0] + user[0]
+    scores.index = movie_titles[scores.index]
+
+    print(scores.nlargest(num_to_show))

@@ -1,5 +1,6 @@
 .idea
 ml-latest
 *.pkl
+*.txt
 .DS_Store
 __pycache__
